@@ -2,9 +2,11 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -73,15 +75,28 @@ func Collect(ctx context.Context, run, trial string, pid int, container string, 
 		r := executor.Run(ctx, "docker", "stats", "--no-stream", "--format", "{{json .}}", container)
 		if r.Err != nil {
 			add("docker.stats", "target_container", "stats", "json", nil, r.Err)
-		} else { // Preserve raw stats separately; numeric CPU percent is parsed explicitly.
-			text := r.Stdout
-			p := strings.Index(text, `"CPUPerc":"`)
-			if p >= 0 {
-				f := strings.SplitN(text[p+11:], "%", 2)
-				v, e := strconv.ParseFloat(f[0], 64)
-				add("docker.stats", "target_container", "cpu_percent", "percent", &v, e)
+		} else {
+			var fields map[string]string
+			if e := json.Unmarshal([]byte(r.Stdout), &fields); e != nil {
+				add("docker.stats", "target_container", "stats_parse", "none", nil, e)
 			} else {
-				add("docker.stats", "target_container", "cpu_percent", "percent", nil, fmt.Errorf("missing CPUPerc"))
+				for key, metric := range map[string]string{"CPUPerc": "cpu_percent", "MemPerc": "memory_percent"} {
+					v, e := strconv.ParseFloat(strings.TrimSuffix(fields[key], "%"), 64)
+					add("docker.stats", "target_container", metric, "percent", &v, e)
+				}
+				for key, names := range map[string][2]string{"MemUsage": {"memory_current", "memory_limit"}, "BlockIO": {"disk_read_bytes", "disk_write_bytes"}, "NetIO": {"network_rx_bytes", "network_tx_bytes"}} {
+					pair := strings.Split(fields[key], "/")
+					for i, metric := range names {
+						var v float64
+						var e error
+						if len(pair) != 2 {
+							e = fmt.Errorf("missing %s", key)
+						} else {
+							v, e = ParseBytes(pair[i])
+						}
+						add("docker.stats", "target_container", metric, "bytes", &v, e)
+					}
+				}
 			}
 		}
 		add("procfs", "target_container", "procfs_visibility", "none", nil, fmt.Errorf("caller procfs does not identify Docker Desktop container"))
@@ -89,6 +104,38 @@ func Collect(ctx context.Context, run, trial string, pid int, container string, 
 	}
 	v, e := Ticks(pid)
 	add("procfs", "target_process", "cpu_ticks", "ticks", &v, e)
+	if b, e := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", pid, pid)); e == nil {
+		total := v
+		for _, child := range strings.Fields(string(b)) {
+			p, _ := strconv.Atoi(child)
+			ticks, err := Ticks(p)
+			if err == nil {
+				total += ticks
+			}
+		}
+		add("procfs", "process_and_direct_children", "cpu_tree_ticks", "ticks", &total, nil)
+	}
+	if b, e := os.ReadFile("/proc/net/dev"); e != nil {
+		add("procfs.net", "caller_network_namespace", "network_counters", "bytes", nil, e)
+	} else {
+		for _, line := range strings.Split(string(b), "\n") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			f := strings.Fields(parts[1])
+			if len(f) < 16 {
+				continue
+			}
+			for _, entry := range []struct {
+				index      int
+				name, unit string
+			}{{0, "rx_bytes", "bytes"}, {1, "rx_packets", "packets"}, {8, "tx_bytes", "bytes"}, {9, "tx_packets", "packets"}} {
+				v, e := strconv.ParseFloat(f[entry.index], 64)
+				add("procfs.net", "caller_network_namespace", strings.TrimSpace(parts[0])+"."+entry.name, entry.unit, &v, e)
+			}
+		}
+	}
 	for _, entry := range []struct{ path, scope string }{{fmt.Sprintf("/proc/%d/status", pid), "target_process"}, {fmt.Sprintf("/proc/%d/io", pid), "target_process"}, {"/proc/meminfo", "caller_guest"}} {
 		b, e := os.ReadFile(entry.path)
 		if e != nil {
@@ -155,4 +202,20 @@ func Collect(ctx context.Context, run, trial string, pid int, container string, 
 		add("cgroup.v2", "target_process", "cgroup_identity", "none", nil, e)
 	}
 	return out
+}
+
+func ParseBytes(s string) (float64, error) {
+	parts := regexp.MustCompile(`^\s*([0-9.]+)\s*([A-Za-z]+)\s*$`).FindStringSubmatch(s)
+	if len(parts) != 3 {
+		return 0, fmt.Errorf("invalid byte size %q", s)
+	}
+	v, e := strconv.ParseFloat(parts[1], 64)
+	if e != nil {
+		return 0, e
+	}
+	scale, ok := map[string]float64{"B": 1, "kB": 1e3, "KB": 1e3, "MB": 1e6, "GB": 1e9, "TB": 1e12, "KiB": 1024, "MiB": 1048576, "GiB": 1073741824, "TiB": 1099511627776}[parts[2]]
+	if !ok {
+		return 0, fmt.Errorf("unknown size unit")
+	}
+	return v * scale, nil
 }

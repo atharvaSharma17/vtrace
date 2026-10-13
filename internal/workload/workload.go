@@ -134,6 +134,9 @@ type fioIO struct {
 
 func InterferenceArgs(kind string, c config.Config, seconds int, scratch string, port int) (string, []string) {
 	args := []string{"--timeout", fmt.Sprintf("%ds", seconds), "--metrics-brief"}
+	if kind != "disk" {
+		args = append(args, "--temp-path", "/tmp")
+	}
 	switch kind {
 	case "cpu":
 		args = append(args, "--cpu", strconv.Itoa(c.Resources.InterferenceCPUs), "--cpu-load", "50")

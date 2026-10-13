@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"vtrace/internal/config"
@@ -126,6 +127,14 @@ func cli(args []string) error {
 			return e
 		}
 		if cmd == "cleanup" {
+			if runtime.GOOS != "linux" {
+				return fmt.Errorf("cleanup must run in the original Linux controller environment")
+			}
+			unlock, e := storage.Lock(filepath.Join(os.TempDir(), fmt.Sprintf("vtrace-host-%d.lock", os.Getuid())))
+			if e != nil {
+				return e
+			}
+			defer unlock()
 			cleanupCtx, cc := context.WithTimeout(ctx, 30*time.Second)
 			defer cc()
 			return engine.Cleanup(cleanupCtx, dir, *run)
@@ -141,7 +150,9 @@ func cli(args []string) error {
 			return e
 		}
 		if cmd == "summarize" && *python {
-			r := executor.Run(ctx, "python3", "analysis/analyze.py", "--run", dir)
+			analysisCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
+			defer stop()
+			r := executor.Run(analysisCtx, "python3", "analysis/analyze.py", "--run", dir)
 			fmt.Print(r.Stdout)
 			fmt.Fprint(os.Stderr, r.Stderr)
 			return r.Err

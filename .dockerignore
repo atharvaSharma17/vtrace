@@ -1,0 +1,7 @@
+.git
+.cache
+bin
+runs
+.venv
+.deps
+__pycache__

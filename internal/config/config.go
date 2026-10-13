@@ -132,12 +132,24 @@ func (c Config) Validate() error {
 			return bad("unknown interference " + i)
 		}
 	}
+	for _, w := range c.Workloads {
+		seen := map[string]bool{}
+		for _, i := range c.Interference {
+			if i == "matched" {
+				i = w
+			}
+			if seen[i] {
+				return bad("interference aliases create duplicate conditions for " + w)
+			}
+			seen[i] = true
+		}
+	}
 	r := c.Resources
 	if r.TargetCPUs < 1 || r.InterferenceCPUs < 1 || r.TargetCPUs > 256 || r.InterferenceCPUs > 256 || r.TargetMemoryMB < 64 || r.TargetMemoryMB > 1024 || r.InterferenceMemoryMB < 32 || r.InterferenceMemoryMB > 512 {
 		return bad("CPU counts or conservative memory bounds violated")
 	}
 	t := c.Trial
-	if t.Measure < 1 || t.Warmup < 0 || t.Cooldown < 0 || t.Timeout < t.Measure+t.Warmup+10 || c.MaxDuration < t.Timeout {
+	if t.Measure < 1 || t.Measure > 3600 || t.Warmup < 0 || t.Cooldown < 0 || t.Warmup > 300 || t.Cooldown > 300 || t.Timeout < t.Measure+t.Warmup+10 || t.Timeout > 7200 || c.MaxDuration < t.Timeout || c.MaxDuration > 86400 {
 		return bad("invalid durations or missing campaign cap")
 	}
 	if c.Sampling.IntervalMS < 100 {

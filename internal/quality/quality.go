@@ -120,6 +120,10 @@ func Summarize(dir string) (map[string]any, error) {
 	}
 	groups := map[string][]float64{}
 	counts := map[string]int{}
+	scheduled := map[string]int{}
+	for _, p := range plan {
+		scheduled[p.ConditionID]++
+	}
 	status := map[string]int{}
 	exclusions := []map[string]string{}
 	confounded := 0
@@ -149,7 +153,7 @@ func Summarize(dir string) (map[string]any, error) {
 	}
 	summaries := map[string]any{}
 	for _, p := range plan {
-		summaries[p.ConditionID] = map[string]any{"backend": p.Backend, "workload": p.Workload, "interference_kind": p.Interference, "scheduled": 0, "attempted": counts[p.ConditionID], "failure_count": counts[p.ConditionID] - len(groups[p.ConditionID]), "throughput": Describe(groups[p.ConditionID])}
+		summaries[p.ConditionID] = map[string]any{"backend": p.Backend, "workload": p.Workload, "interference_kind": p.Interference, "scheduled": scheduled[p.ConditionID], "attempted": counts[p.ConditionID], "failure_count": counts[p.ConditionID] - len(groups[p.ConditionID]), "throughput": Describe(groups[p.ConditionID])}
 	}
 	samples, e := storage.Read[metrics.Sample](filepath.Join(dir, "samples.jsonl"))
 	if e != nil {

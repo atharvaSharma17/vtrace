@@ -55,6 +55,9 @@ def analyze(run):
     import matplotlib.pyplot as plt
 
     rows = read_jsonl(run / "trials.jsonl")
+    provenance_kind = "synthetic_test_fixture" if rows and all(r.get("data_provenance") == "synthetic_test_fixture" for r in rows) else "measured"
+    if provenance_kind == "measured" and any(r.get("data_provenance") == "synthetic_test_fixture" for r in rows):
+        raise ValueError("synthetic fixtures cannot be mixed with measured observations")
     plan = read_jsonl(run / "plan.jsonl")
     host = json.loads((run / "host.json").read_text())
     ids = [r["trial_id"] for r in rows]
@@ -229,7 +232,7 @@ def analyze(run):
     provenance = hashlib.sha256((run/"trials.jsonl").read_bytes()).hexdigest() if (run/"trials.jsonl").exists() else "no trial file"
     report = f"""# V-TRACE statistical report
 
-Data provenance: measured trial records in `{run.name}/trials.jsonl`; SHA256 `{provenance}`.
+Data provenance: {provenance_kind} trial records in `{run.name}/trials.jsonl`; SHA256 `{provenance}`.
 Host fingerprint: `{host.get('host_id')}`; kernel `{host.get('kernel')}`.
 Scheduled: {len(plan)}; attempted: {len(rows)}; valid: {len(valid)}; excluded: {len(exclusions)}.
 Independent trial is the experimental unit. Sampler rows never inflate n.
@@ -252,7 +255,7 @@ These are fixed-duration workloads: throughput is primary; timing is a duration/
 This report makes no claim of isolated container overhead or publication-ready causal attribution.
 """
     (output/"statistical_report.md").write_text(report)
-    print(f"Analyzed {len(valid)} valid measured trials of {len(plan)} scheduled; outputs: {output}")
+    print(f"Analyzed {len(valid)} valid {provenance_kind} trials of {len(plan)} scheduled; outputs: {output}")
 
 
 if __name__ == "__main__":

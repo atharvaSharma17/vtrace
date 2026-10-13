@@ -1,0 +1,38 @@
+﻿schema_version: 1
+name: wsl_smoke
+seed: 20261013
+repetitions: 1
+blocks: 1
+backends: [wsl-process]
+workloads: [cpu, memory, disk, network]
+interference: [none, matched]
+resources:
+  target_cpus: 2
+  target_memory_mb: 1024
+  interference_cpus: 2
+  interference_memory_mb: 512
+trial:
+  warmup_seconds: 0
+  measure_seconds: 2
+  cooldown_seconds: 1
+  timeout_seconds: 30
+sampling:
+  enabled: true
+  interval_ms: 250
+disk:
+  path: /home/atharva/vtrace/scratch
+  size_mb: 64
+  block_size: 4k
+  rw: randrw
+  direct: true
+  depth: 1
+network:
+  endpoint: 127.0.0.1
+  port: 15201
+  topology: loopback-in-backend-namespace
+  managed_server: true
+docker_image: vtrace-bench:local
+max_duration_seconds: 900
+output:
+  root: runs
+

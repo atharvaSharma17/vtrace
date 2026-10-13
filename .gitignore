@@ -5,3 +5,6 @@
 __pycache__/
 *.test
 /.cache/
+/calibration/
+/host.json
+/doctor.json

@@ -61,12 +61,28 @@ type runner struct {
 	h         host.Snapshot
 	resources []Resource
 	fatal     error
+	states    map[string]experiment.State
 }
 
 func (r *runner) event(trial, state string, detail any) error {
+	if r.states == nil {
+		r.states = map[string]experiment.State{}
+	}
+	if !strings.HasPrefix(state, "INTERFERENCE_") {
+		old := r.states[trial]
+		if old == "" {
+			old = experiment.Pending
+		}
+		if e := experiment.Advance(old, experiment.State(state)); e != nil {
+			r.fatal = e
+			return e
+		}
+	}
 	e := storage.Append(filepath.Join(r.dir, "events.jsonl"), map[string]any{"run_id": r.run, "trial_id": trial, "state": state, "timestamp_utc": time.Now().UTC().Format(time.RFC3339Nano), "detail": detail})
 	if e != nil {
 		r.fatal = e
+	} else if !strings.HasPrefix(state, "INTERFERENCE_") {
+		r.states[trial] = experiment.State(state)
 	}
 	return e
 }
@@ -382,12 +398,29 @@ func (r *runner) trial(s experiment.Spec) (record Record) {
 		}
 		r.event(s.TrialID, strings.ToUpper(record.Status), record.Reason)
 	}()
+	if e := r.event(s.TrialID, "PREPARING", nil); e != nil {
+		record.Reason = e.Error()
+		return
+	}
 	if r.h.Capabilities[s.Backend] != "available" {
 		record.Status = "skipped_unsupported"
 		record.Reason = "backend unavailable in host snapshot"
 		return
 	}
-	r.event(s.TrialID, "PREPARING", nil)
+	if workload.IsDocker(s.Backend) {
+		engineCPUs, _ := r.h.Docker["NCPU"].(float64)
+		engineBytes, _ := r.h.Docker["MemTotal"].(float64)
+		if float64(r.c.Resources.TargetCPUs) > engineCPUs || float64(r.c.Resources.InterferenceCPUs) > engineCPUs || float64((r.c.Resources.TargetMemoryMB+r.c.Resources.InterferenceMemoryMB+512)*1048576) > engineBytes {
+			record.Reason = "Docker engine resource request exceeds capacity"
+			return
+		}
+		image := docker(ctx, "image", "inspect", r.c.DockerImage)
+		if image.Err != nil {
+			record.Status = "skipped_unsupported"
+			record.Reason = "benchmark image not built or available locally"
+			return
+		}
+	}
 	if r.h.AvailableMemoryMB == nil || *r.h.AvailableMemoryMB < r.c.Resources.TargetMemoryMB+r.c.Resources.InterferenceMemoryMB+512 {
 		record.Reason = "insufficient available guest memory"
 		return
@@ -571,6 +604,7 @@ func (r *runner) trial(s experiment.Spec) (record Record) {
 		}
 		tick := time.NewTicker(time.Duration(r.c.Sampling.IntervalMS) * time.Millisecond)
 		defer tick.Stop()
+		rates := metrics.RateState{}
 		for {
 			select {
 			case <-sampleCtx.Done():
@@ -582,6 +616,12 @@ func (r *runner) trial(s experiment.Spec) (record Record) {
 						sampleDone <- e
 						return
 					}
+					if rate := rates.Update(v); rate != nil {
+						if e := storage.Append(filepath.Join(r.dir, "samples.jsonl"), rate); e != nil {
+							sampleDone <- e
+							return
+						}
+					}
 				}
 				if interferer != nil {
 					for _, v := range metrics.Collect(sampleCtx, r.run, s.TrialID, interferer.PID(), interfererID, measureStart) {
@@ -589,6 +629,12 @@ func (r *runner) trial(s experiment.Spec) (record Record) {
 						if e := storage.Append(filepath.Join(r.dir, "samples.jsonl"), v); e != nil {
 							sampleDone <- e
 							return
+						}
+						if rate := rates.Update(v); rate != nil {
+							if e := storage.Append(filepath.Join(r.dir, "samples.jsonl"), rate); e != nil {
+								sampleDone <- e
+								return
+							}
 						}
 					}
 				}
@@ -752,8 +798,20 @@ func Run(ctx context.Context, c config.Config, manifest []byte, resume string) (
 		return run, e
 	}
 	done := map[string]bool{}
+	planByID := map[string]experiment.Spec{}
+	for _, s := range plans {
+		planByID[s.TrialID] = s
+	}
+	failures := 0
 	for _, v := range rows {
+		s, ok := planByID[v.TrialID]
+		if !ok || s != v.Spec || v.ManifestHash != c.Hash() {
+			return run, fmt.Errorf("record differs from immutable plan/manifest: %s", v.TrialID)
+		}
 		done[v.TrialID] = true
+		if !v.Valid {
+			failures++
+		}
 	}
 	free, e := executor.FreeMB(c.Output.Root)
 	if e != nil || free < 5120 {
@@ -763,7 +821,6 @@ func Run(ctx context.Context, c config.Config, manifest []byte, resume string) (
 	deadlineCtx, cancel := context.WithTimeout(ctx, time.Duration(c.MaxDuration)*time.Second)
 	defer cancel()
 	r.ctx = deadlineCtx
-	var failures int
 	for _, s := range plans {
 		if done[s.TrialID] {
 			continue
