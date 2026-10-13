@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+go test ./...
+go vet ./...
+python3 -m unittest discover -s analysis/tests
+go run ./cmd/vtrace plan --config experiments/pilot.yaml --output "${TMPDIR:-/tmp}/vtrace-plan-$$.jsonl"

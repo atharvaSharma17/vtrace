@@ -1,0 +1,24 @@
+schema_version: 1
+name: local_cpu_preflight
+seed: 20261013
+repetitions: 1
+blocks: 1
+backends: [wsl-process]
+workloads: [cpu]
+interference: [none]
+resources:
+  target_cpus: 1
+  target_memory_mb: 256
+  interference_cpus: 1
+  interference_memory_mb: 64
+trial:
+  warmup_seconds: 0
+  measure_seconds: 2
+  cooldown_seconds: 0
+  timeout_seconds: 15
+sampling:
+  enabled: true
+  interval_ms: 250
+max_duration_seconds: 30
+output:
+  root: runs

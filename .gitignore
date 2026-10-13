@@ -1,0 +1,7 @@
+/bin/
+/runs/*
+!/runs/.gitkeep
+/.venv/
+__pycache__/
+*.test
+/.cache/
